@@ -84,6 +84,28 @@ class IdlixProvider : MainAPI() {
         "Accept" to "application/json, text/plain, */*",
     )
 
+    /**
+     * Accepts either the API URL we set on SearchResponse
+     * ("$mainUrl/api/(movies|series)/$slug") or the canonical web URL
+     * stored on LoadResponse ("$mainUrl/(movie|series)/$slug") and
+     * returns the API endpoint. Cloudstream re-enters [load] with the
+     * web URL when an item is opened from the featured slider, history,
+     * bookmarks, or any other surface that round-trips through the
+     * stored LoadResponse.url.
+     */
+    private fun toApiUrl(url: String): String {
+        if (url.contains("/api/")) return url
+        val path = url.substringAfter(mainUrl).trimStart('/')
+        val segments = path.split('/').filter { it.isNotEmpty() }
+        if (segments.size < 2) return url
+        val slug = segments[1].substringBefore('?').substringBefore('#')
+        return when (segments[0]) {
+            "movie", "movies" -> "$mainUrl/api/movies/$slug"
+            "series", "tv", "tv-series" -> "$mainUrl/api/series/$slug"
+            else -> url
+        }
+    }
+
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest,
@@ -118,10 +140,16 @@ class IdlixProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        // `url` is set by toSearchResponse to "$mainUrl/api/(movies|series)/$slug".
-        val res = app.get(url, headers = apiHeaders(), interceptor = cfKiller)
+        // Cloudstream may call load() with either the API URL we set on
+        // SearchResponse ("$mainUrl/api/(movies|series)/$slug") or the web
+        // URL stored as the LoadResponse's canonical url
+        // ("$mainUrl/(movie|series)/$slug") — featured slider, history and
+        // bookmarks all use the latter. Normalize both shapes to the API
+        // endpoint before fetching.
+        val apiUrl = toApiUrl(url)
+        val res = app.get(apiUrl, headers = apiHeaders(), interceptor = cfKiller)
             .parsedSafe<DetailResponse>()
-            ?: throw ErrorLoadingException("Invalid response from $url")
+            ?: throw ErrorLoadingException("Invalid response from $apiUrl")
 
         val isSeries = !res.seasons.isNullOrEmpty() || res.numberOfSeasons != null
         val title = res.title ?: res.slug ?: "Unknown"
