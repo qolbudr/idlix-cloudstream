@@ -1,0 +1,9 @@
+{
+    "name": "Idlix Repo",
+    "iconUrl": "https://z1.idlixku.com/favicon.png",
+    "description": "Idlix Cloudstream Repository",
+    "manifestVersion": 1,
+    "pluginLists": [
+        "https://raw.githubusercontent.com/qolbudr/idlix-cloudstream/builds/plugins.json"
+    ]
+}
