@@ -37,7 +37,9 @@ import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.M3u8Helper
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.newSubtitleFile
 import kotlinx.coroutines.delay
 import okhttp3.MediaType.Companion.toMediaType
@@ -126,17 +128,17 @@ class IdlixProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // /api/search returns mixed movie + tv_series.
-        val results = mutableListOf<SearchResponse>()
-        listOf("movie", "tv_series").forEach { type ->
-            runCatching {
-                val url = "$mainUrl/api/search?q=$query&page=1&limit=20&type=$type"
-                val res = app.get(url, headers = apiHeaders(), interceptor = cfKiller)
-                    .parsedSafe<SearchApiResponse>()
-                res?.results?.mapNotNullTo(results) { it.toSearchResponse() }
-            }
-        }
-        return results
+        // /api/search returns movies and TV series interleaved by relevance
+        // when no `type` filter is set. Calling once without `type` keeps
+        // the server-side ranking intact — splitting the request into two
+        // typed calls would surface every movie before any series, which
+        // looks like "no series found" if the user only scans the top
+        // rows.
+        val encoded = java.net.URLEncoder.encode(query, "UTF-8")
+        val url = "$mainUrl/api/search?q=$encoded&page=1&limit=40"
+        val res = app.get(url, headers = apiHeaders(), interceptor = cfKiller)
+            .parsedSafe<SearchApiResponse>()
+        return res?.results?.mapNotNull { it.toSearchResponse() } ?: emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -275,11 +277,23 @@ class IdlixProvider : MainAPI() {
         val redeem = fetchPlayData(parsed) ?: return false
         val streamUrl = redeem.url?.takeIf { it.isNotBlank() } ?: return false
 
-        M3u8Helper.generateM3u8(
-            source = name,
-            streamUrl = streamUrl,
-            referer = "$mainUrl/",
-        ).forEach(callback)
+        // Emit a single HLS master URL. Cloudstream's player handles
+        // adaptive bitrate selection internally, which both gives users
+        // a working quality picker in the player and avoids the
+        // "Idlix, Idlix, Idlix" duplicate-source list that
+        // M3u8Helper.generateM3u8 produces when the master playlist's
+        // variants don't expose a RESOLUTION attribute.
+        callback(
+            newExtractorLink(
+                source = name,
+                name = name,
+                url = streamUrl,
+                type = ExtractorLinkType.M3U8,
+            ) {
+                this.referer = "$mainUrl/"
+                this.quality = Qualities.Unknown.value
+            }
+        )
 
         redeem.subtitles.forEach { sub ->
             val label = sub.label ?: sub.lang ?: "Subtitle"
