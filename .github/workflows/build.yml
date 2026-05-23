@@ -51,6 +51,20 @@ jobs:
           cp **/build/*.cs3 $GITHUB_WORKSPACE/builds
           cp build/plugins.json $GITHUB_WORKSPACE/builds
 
+      - name: Write repo.json
+        run: |
+          cat > $GITHUB_WORKSPACE/builds/repo.json <<'EOF'
+          {
+              "name": "Idlix Repo",
+              "iconUrl": "https://z1.idlixku.com/favicon.png",
+              "description": "Idlix Cloudstream Repository",
+              "manifestVersion": 1,
+              "pluginLists": [
+                  "https://raw.githubusercontent.com/${{ github.repository }}/builds/plugins.json"
+              ]
+          }
+          EOF
+
       - name: Push builds
         run: |
           cd $GITHUB_WORKSPACE/builds
