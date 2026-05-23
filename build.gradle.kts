@@ -13,6 +13,12 @@ buildscript {
 
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
+        // Override R8 with a version that supports Kotlin 2.3 metadata.
+        // AGP 8.7.3 ships R8 8.7.18 which throws "Should never be called"
+        // when rewriting Kotlin 2.3.x metadata. Per the official compat table
+        // (https://developer.android.com/build/kotlin-support), Kotlin 2.3
+        // requires R8 8.13.191+ or 9.0.28+.
+        classpath("com.android.tools:r8:9.1.31")
         // Cloudstream gradle plugin which makes everything work and builds plugins
         classpath("com.github.recloudstream:gradle:-SNAPSHOT")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0")
