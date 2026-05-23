@@ -1,0 +1,25 @@
+[
+    {
+        "iconUrl": "https://z2.idlixku.com/favicon.png",
+        "fileHash": "sha256-d8eb086fb3d24a1de825068e1d2e9e09d9be725027e85bcfbfd145c40096955f",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/qolbudr/idlix-cloudstream",
+        "fileSize": 46949,
+        "status": 1,
+        "language": "id",
+        "authors": [
+            "qolbudr (original)",
+            "ported to Cloudstream"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "AsianDrama"
+        ],
+        "version": 17,
+        "internalName": "IdlixProvider",
+        "description": "Idlix - port of qolbudr/idlix-addons-stremio",
+        "url": "https://raw.githubusercontent.com/qolbudr/idlix-cloudstream/builds/IdlixProvider.cs3",
+        "name": "IdlixProvider"
+    }
+]
