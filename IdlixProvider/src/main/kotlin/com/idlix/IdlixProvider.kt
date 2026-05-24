@@ -297,27 +297,27 @@ class IdlixProvider : MainAPI() {
         val redeem = fetchPlayData(parsed) ?: return false
         val streamUrl = redeem.url?.takeIf { it.isNotBlank() } ?: return false
 
-        // Parse the master HLS playlist ourselves so each variant gets a
-        // proper quality label like "Idlix 1080p" / "Idlix 720p" instead
-        // of duplicate "Idlix" entries (the default M3u8Helper behavior
-        // when a variant has BANDWIDTH but no RESOLUTION).
-        val emitted = emitVariants(streamUrl, callback)
-        if (!emitted) {
-            // Fallback: hand the master URL to the player and let it pick.
-            val origin = originOf(streamUrl)
-            callback(
-                newExtractorLink(
-                    source = name,
-                    name = name,
-                    url = streamUrl,
-                    type = ExtractorLinkType.M3U8,
-                ) {
-                    this.referer = "$origin/"
-                    this.quality = Qualities.Unknown.value
-                    this.headers = playbackHeaders(origin)
-                }
-            )
-        }
+        // Hand the master HLS playlist to the player as a single source
+        // so ExoPlayer can pick + switch between variants adaptively
+        // (ABR). Splitting the master into per-resolution links would
+        // disable ABR and force the player to rebuffer when bandwidth
+        // drops mid-segment.
+        val origin = originOf(streamUrl)
+        callback(
+            newExtractorLink(
+                source = name,
+                name = name,
+                url = streamUrl,
+                type = ExtractorLinkType.M3U8,
+            ) {
+                this.referer = "$origin/"
+                this.quality = Qualities.Unknown.value
+                // Forwarded by ExoPlayer on every segment + media
+                // playlist request — keeps majorplay's CDN from
+                // throttling because we look like a real browser.
+                this.headers = playbackHeaders(origin)
+            }
+        )
 
         redeem.subtitles.forEach { sub ->
             val label = sub.label ?: sub.lang ?: "Subtitle"
@@ -373,116 +373,12 @@ class IdlixProvider : MainAPI() {
         ).parsedSafe<RedeemRes>()
     }
 
-    /**
-     * Fetches the HLS master playlist at [masterUrl], parses each
-     * `#EXT-X-STREAM-INF` variant, and emits one [ExtractorLink] per
-     * variant labeled with its resolution (e.g. "Idlix 1080p"). Returns
-     * `false` if the playlist could not be fetched, was not a master
-     * (no variants), or any other unrecoverable parsing error happened —
-     * the caller should fall back to a single master link in that case.
-     */
-    private suspend fun emitVariants(
-        masterUrl: String,
-        callback: (ExtractorLink) -> Unit,
-    ): Boolean {
-        // Use the *playlist's* origin (e.g. https://e2e.majorplay.net)
-        // for both the master fetch and the per-variant headers. Sending
-        // idlixku.com as Origin/Referer to majorplay confuses the CDN
-        // and is one of the things that triggers throttling.
-        val origin = originOf(masterUrl)
-        val playHeaders = playbackHeaders(origin)
-
-        val body = runCatching {
-            app.get(masterUrl, headers = playHeaders).text
-        }.getOrNull() ?: return false
-
-        if (!body.contains("#EXT-X-STREAM-INF")) return false
-
-        // Resolve each variant URI relative to the master. We don't use
-        // java.net.URI#resolve() to avoid pulling stricter validation on
-        // the upstream URL; manual prefixing is enough here because the
-        // server always returns absolute or root-relative paths.
-        val masterBase = masterUrl.substringBeforeLast('/') + "/"
-        val schemeAndHost = run {
-            val schemeIdx = masterUrl.indexOf("://")
-            if (schemeIdx <= 0) return@run ""
-            val pathIdx = masterUrl.indexOf('/', schemeIdx + 3)
-            if (pathIdx < 0) masterUrl else masterUrl.substring(0, pathIdx)
-        }
-
-        val variants = parseHlsVariants(body)
-        if (variants.isEmpty()) return false
-
-        var emitted = 0
-        for (v in variants) {
-            val absolute = when {
-                v.uri.startsWith("http://") || v.uri.startsWith("https://") -> v.uri
-                v.uri.startsWith("//") -> "https:${v.uri}"
-                v.uri.startsWith("/") -> schemeAndHost + v.uri
-                else -> masterBase + v.uri
-            }
-            val label = if (v.height != null) "$name ${v.height}p" else name
-            callback(
-                newExtractorLink(
-                    source = name,
-                    name = label,
-                    url = absolute,
-                    type = ExtractorLinkType.M3U8,
-                ) {
-                    this.referer = "$origin/"
-                    this.quality = v.height ?: Qualities.Unknown.value
-                    // Forwarded by ExoPlayer on every segment + media
-                    // playlist request, which is what unblocks parallel
-                    // segment loading on majorplay's CDN.
-                    this.headers = playHeaders
-                }
-            )
-            emitted++
-        }
-        return emitted > 0
-    }
-
     /** Returns scheme+host of [url], e.g. "https://e2e.majorplay.net". */
     private fun originOf(url: String): String {
         val schemeIdx = url.indexOf("://")
         if (schemeIdx <= 0) return mainUrl
         val pathIdx = url.indexOf('/', schemeIdx + 3)
         return if (pathIdx < 0) url else url.substring(0, pathIdx)
-    }
-
-    /** Internal: a single HLS variant entry. */
-    private data class HlsVariant(val height: Int?, val bandwidth: Long?, val uri: String)
-
-    /**
-     * Minimal HLS master parser: walks `#EXT-X-STREAM-INF:` lines and
-     * pairs each with the next non-comment line (the variant URI).
-     * Extracts RESOLUTION (height) and BANDWIDTH when present. Skips
-     * lines we don't understand instead of throwing.
-     */
-    private fun parseHlsVariants(body: String): List<HlsVariant> {
-        val out = mutableListOf<HlsVariant>()
-        val lines = body.lineSequence().map { it.trim() }.toList()
-        var i = 0
-        while (i < lines.size) {
-            val line = lines[i]
-            if (line.startsWith("#EXT-X-STREAM-INF")) {
-                val attrs = line.substringAfter(':', "")
-                val height = Regex("RESOLUTION=\\d+x(\\d+)")
-                    .find(attrs)?.groupValues?.getOrNull(1)?.toIntOrNull()
-                val bandwidth = Regex("BANDWIDTH=(\\d+)")
-                    .find(attrs)?.groupValues?.getOrNull(1)?.toLongOrNull()
-                // Find the next URI line (skip comments and blanks).
-                var j = i + 1
-                while (j < lines.size && (lines[j].isEmpty() || lines[j].startsWith("#"))) j++
-                if (j < lines.size) {
-                    out += HlsVariant(height, bandwidth, lines[j])
-                    i = j + 1
-                    continue
-                }
-            }
-            i++
-        }
-        return out
     }
 
     /* ---------- mappers ---------- */
