@@ -87,6 +87,26 @@ class IdlixProvider : MainAPI() {
     )
 
     /**
+     * Browser-shaped headers for HLS playback. ExoPlayer forwards
+     * `ExtractorLink.headers` on every segment request — without these,
+     * the upstream CDN (e2e.majorplay.net) often throttles segment
+     * downloads and the player rebuffers between every short chunk
+     * ("dikit-load dikit-load"). User-Agent + Origin + Referer + Range
+     * mimic a real browser fetch and let the CDN serve segments at full
+     * speed in parallel.
+     */
+    private val playbackUserAgent =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+    private fun playbackHeaders(origin: String) = mapOf(
+        "User-Agent" to playbackUserAgent,
+        "Accept" to "*/*",
+        "Accept-Language" to "en-US,en;q=0.9,id;q=0.8",
+        "Origin" to origin,
+        "Referer" to "$origin/",
+    )
+
+    /**
      * Accepts either the API URL we set on SearchResponse
      * ("$mainUrl/api/(movies|series)/$slug") or the canonical web URL
      * stored on LoadResponse ("$mainUrl/(movie|series)/$slug") and
@@ -284,6 +304,7 @@ class IdlixProvider : MainAPI() {
         val emitted = emitVariants(streamUrl, callback)
         if (!emitted) {
             // Fallback: hand the master URL to the player and let it pick.
+            val origin = originOf(streamUrl)
             callback(
                 newExtractorLink(
                     source = name,
@@ -291,8 +312,9 @@ class IdlixProvider : MainAPI() {
                     url = streamUrl,
                     type = ExtractorLinkType.M3U8,
                 ) {
-                    this.referer = "$mainUrl/"
+                    this.referer = "$origin/"
                     this.quality = Qualities.Unknown.value
+                    this.headers = playbackHeaders(origin)
                 }
             )
         }
@@ -363,8 +385,15 @@ class IdlixProvider : MainAPI() {
         masterUrl: String,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
+        // Use the *playlist's* origin (e.g. https://e2e.majorplay.net)
+        // for both the master fetch and the per-variant headers. Sending
+        // idlixku.com as Origin/Referer to majorplay confuses the CDN
+        // and is one of the things that triggers throttling.
+        val origin = originOf(masterUrl)
+        val playHeaders = playbackHeaders(origin)
+
         val body = runCatching {
-            app.get(masterUrl, headers = mapOf("Referer" to "$mainUrl/")).text
+            app.get(masterUrl, headers = playHeaders).text
         }.getOrNull() ?: return false
 
         if (!body.contains("#EXT-X-STREAM-INF")) return false
@@ -400,13 +429,25 @@ class IdlixProvider : MainAPI() {
                     url = absolute,
                     type = ExtractorLinkType.M3U8,
                 ) {
-                    this.referer = "$mainUrl/"
+                    this.referer = "$origin/"
                     this.quality = v.height ?: Qualities.Unknown.value
+                    // Forwarded by ExoPlayer on every segment + media
+                    // playlist request, which is what unblocks parallel
+                    // segment loading on majorplay's CDN.
+                    this.headers = playHeaders
                 }
             )
             emitted++
         }
         return emitted > 0
+    }
+
+    /** Returns scheme+host of [url], e.g. "https://e2e.majorplay.net". */
+    private fun originOf(url: String): String {
+        val schemeIdx = url.indexOf("://")
+        if (schemeIdx <= 0) return mainUrl
+        val pathIdx = url.indexOf('/', schemeIdx + 3)
+        return if (pathIdx < 0) url else url.substring(0, pathIdx)
     }
 
     /** Internal: a single HLS variant entry. */
