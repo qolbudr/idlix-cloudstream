@@ -2,7 +2,7 @@
  * Ported from https://github.com/qolbudr/idlix-addons-stremio
  * Original Stremio addon by qolbudr — released under MIT.
  *
- * Reuses the same backend (z1.idlixku.com) and play-info → claim → redeem
+ * Reuses the same backend (z2.idlixku.com) and play-info → claim → redeem
  * flow described in src/wrapper/idlix.ts and src/wrapper/proxyClient.ts.
  * Cloudstream runs natively on the device, so we don't need the
  * proxy-cloudflare-mocha hop — we just chain cookies between play-info and

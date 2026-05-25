@@ -10,7 +10,7 @@
  *   - It also doubles as a regression check for the JSON shapes parsed
  *     into IdlixModels.kt — those data classes are reused as-is.
  *
- * z1.idlixku.com is fronted by Cloudflare, so direct curl returns the
+ * z2.idlixku.com is fronted by Cloudflare, so direct curl returns the
  * "Just a moment..." HTML challenge. On a real device Cloudstream's
  * CloudflareKiller solves it once via WebView. From a vanilla JVM we
  * route through the existing `proxy-cloudflare-mocha` service, the same
@@ -34,7 +34,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
 
-private const val IDLIX = "https://z1.idlixku.com"
+private const val IDLIX = "https://z2.idlixku.com"
 private const val PROXY_URL = "https://proxy-cloudflare-mocha.vercel.app/api/*"
 
 private val mapper = JsonMapper.builder()

@@ -1,5 +1,5 @@
 // Use an integer for version numbers
-version = 6
+version = 9
 
 cloudstream {
     description = "Idlix - port of qolbudr/idlix-addons-stremio"
@@ -22,7 +22,7 @@ cloudstream {
 
     language = "id"
 
-    iconUrl = "https://z1.idlixku.com/favicon.png"
+    iconUrl = "https://z2.idlixku.com/favicon.png"
 }
 
 android {

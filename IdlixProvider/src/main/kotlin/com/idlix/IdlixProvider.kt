@@ -42,11 +42,13 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.newSubtitleFile
 import kotlinx.coroutines.delay
+import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 
 class IdlixProvider : MainAPI() {
-    override var mainUrl = "https://z1.idlixku.com"
+    override var mainUrl = "https://z2.idlixku.com"
     override var name = "Idlix"
     override val hasMainPage = true
     override var lang = "id"
@@ -63,7 +65,7 @@ class IdlixProvider : MainAPI() {
     private val tmdbImgActor = "https://image.tmdb.org/t/p/w185"
 
     /**
-     * z1.idlixku.com is fronted by Cloudflare. On real devices we let
+     * z2.idlixku.com is fronted by Cloudflare. On real devices we let
      * Cloudstream's WebView-based killer fetch cf_clearance once per
      * session and reuse it for every subsequent request.
      */
@@ -87,16 +89,45 @@ class IdlixProvider : MainAPI() {
     )
 
     /**
-     * Browser-shaped headers for HLS playback. ExoPlayer forwards
-     * `ExtractorLink.headers` on every segment request — without these,
-     * the upstream CDN (e2e.majorplay.net) often throttles segment
-     * downloads and the player rebuffers between every short chunk
-     * ("dikit-load dikit-load"). User-Agent + Origin + Referer + Range
-     * mimic a real browser fetch and let the CDN serve segments at full
-     * speed in parallel.
+     * Browser-shaped headers for HLS playback.
+     *
+     * Why so many headers: in the browser the same playlist plays
+     * smoothly, but ExoPlayer rebuffers ("dikit-load dikit-load").
+     * Two CDN behaviours conspire here:
+     *
+     *  1. UA-based throttling — Android UAs get ~1 MB/s, browser-style
+     *     requests (Chrome UA + Sec-Fetch-* + Connection: keep-alive)
+     *     get ~2 MB/s. Verified with curl side-by-side.
+     *
+     *  2. Per-segment host fan-out — majorplay's variant playlists
+     *     spread 358 segments across ~15 unique CDN hosts
+     *     (g6.wiseacademia.asia, g6.akademivo.website, …). Each new
+     *     host costs a TCP+TLS handshake; ExoPlayer's default Cronet
+     *     transport doesn't share that pool with our pre-fetch path.
+     *
+     * Fix:
+     *  - Stamp the same browser fingerprint we already use for the
+     *    master playlist on every segment.
+     *  - Override [getVideoInterceptor] so ExoPlayer routes segment
+     *    requests through Cloudstream's shared OkHttp client, reusing
+     *    the connections we just opened for the master. (See
+     *    `CS3IPlayer#createVideoSource` — any non-null interceptor
+     *    selects `OkHttpDataSource` over Cronet.)
      */
     private val playbackUserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+    /** RESOLUTION=1280x720 → captures the height (720). */
+    private val STREAM_INF_RESOLUTION = Regex("""RESOLUTION=\d+x(\d+)""", RegexOption.IGNORE_CASE)
+
+    /** NAME="720p" — used as a fallback when RESOLUTION is missing (majorplay's case). */
+    private val STREAM_INF_NAME = Regex("""NAME="([^"]+)"""", RegexOption.IGNORE_CASE)
+
+    /** BANDWIDTH=3500000 — informational, useful for the lowest-bandwidth pick. */
+    private val STREAM_INF_BANDWIDTH = Regex("""BANDWIDTH=(\d+)""", RegexOption.IGNORE_CASE)
+
+    /** "720p" / "1080P" inside a NAME attribute. */
+    private val HEIGHT_FROM_NAME = Regex("""\d{3,4}""")
 
     private fun playbackHeaders(origin: String) = mapOf(
         "User-Agent" to playbackUserAgent,
@@ -104,7 +135,55 @@ class IdlixProvider : MainAPI() {
         "Accept-Language" to "en-US,en;q=0.9,id;q=0.8",
         "Origin" to origin,
         "Referer" to "$origin/",
+        // Browser fingerprint — doubles segment throughput on
+        // majorplay's CDN (verified ~1 MB/s vs ~2 MB/s).
+        "Connection" to "keep-alive",
+        "Sec-Fetch-Dest" to "empty",
+        "Sec-Fetch-Mode" to "cors",
+        "Sec-Fetch-Site" to "cross-site",
     )
+
+    /**
+     * Force ExoPlayer onto Cloudstream's shared OkHttp client.
+     *
+     * In `CS3IPlayer#createVideoSource`, when this returns null the
+     * player builds either a `CronetDataSource` or a
+     * `DefaultHttpDataSource`. Both keep their own connection pools,
+     * so the TCP+TLS sessions we just opened to the master playlist
+     * (and to each of majorplay's ~15 segment hosts) cannot be reused.
+     * Result: every host transition on the variant playlist costs a
+     * fresh handshake (~300 ms) and the player rebuffers.
+     *
+     * Returning any non-null interceptor selects
+     * `OkHttpDataSource.Factory(app.baseClient.newBuilder()...)` —
+     * the same client every `app.get()` uses — so connection reuse
+     * across segments and across hosts becomes effectively free.
+     *
+     * The interceptor itself only stamps headers defensively, in case
+     * ExoPlayer's `setDefaultRequestProperties` is dropped on a
+     * cross-host redirect inside the playlist.
+     */
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        // Only swap transports for our own playback links — leave
+        // unrelated extractors (e.g. external subtitles fetched by
+        // other code paths) on whatever default they expect.
+        if (extractorLink.source != name) return null
+
+        val origin = runCatching { originOf(extractorLink.url) }.getOrNull() ?: return null
+        val baseHeaders = playbackHeaders(origin)
+
+        return Interceptor { chain ->
+            val original = chain.request()
+            val builder = original.newBuilder()
+            // Don't fight the player on Range — only fill in headers
+            // that aren't already present so seeking/byte-range fetches
+            // keep working.
+            baseHeaders.forEach { (key, value) ->
+                if (original.header(key) == null) builder.header(key, value)
+            }
+            chain.proceed(builder.build())
+        }
+    }
 
     /**
      * Accepts either the API URL we set on SearchResponse
@@ -297,27 +376,7 @@ class IdlixProvider : MainAPI() {
         val redeem = fetchPlayData(parsed) ?: return false
         val streamUrl = redeem.url?.takeIf { it.isNotBlank() } ?: return false
 
-        // Hand the master HLS playlist to the player as a single source
-        // so ExoPlayer can pick + switch between variants adaptively
-        // (ABR). Splitting the master into per-resolution links would
-        // disable ABR and force the player to rebuffer when bandwidth
-        // drops mid-segment.
-        val origin = originOf(streamUrl)
-        callback(
-            newExtractorLink(
-                source = name,
-                name = name,
-                url = streamUrl,
-                type = ExtractorLinkType.M3U8,
-            ) {
-                this.referer = "$origin/"
-                this.quality = Qualities.Unknown.value
-                // Forwarded by ExoPlayer on every segment + media
-                // playlist request — keeps majorplay's CDN from
-                // throttling because we look like a real browser.
-                this.headers = playbackHeaders(origin)
-            }
-        )
+        emitPlaybackLinks(streamUrl, callback)
 
         redeem.subtitles.forEach { sub ->
             val label = sub.label ?: sub.lang ?: "Subtitle"
@@ -325,6 +384,161 @@ class IdlixProvider : MainAPI() {
         }
 
         return true
+    }
+
+    /**
+     * Resolve the redeem-returned master playlist into one
+     * [ExtractorLink] per variant (e.g. 720p, 1080p) instead of handing
+     * the master to the player.
+     *
+     * Why not let ExoPlayer's ABR handle the master directly?
+     * majorplay's variant playlists fan every 5-second segment out
+     * across dozens of unique CDN hostnames (g6.wiseacademia.asia,
+     * g6.akademivo.website, g6.aspireheightsacademy.digital, …). With
+     * no socket reuse between segments, per-segment fetch time gets
+     * noisy enough that ABR misreads it as bandwidth drops and starts
+     * oscillating between variants. Each switch flushes the buffer —
+     * exactly the "sometimes buffering" pattern users hit on long
+     * series episodes.
+     *
+     * Pinning to a single variant up front removes the oscillation:
+     * the player loads one media playlist, Cloudstream's quality
+     * profile picks the best, and the user can fall back to a lower
+     * variant if their connection is weak.
+     *
+     * If the master ever fails to parse (e.g. majorplay returns a
+     * media-only playlist), we fall back to handing the original URL
+     * through unchanged.
+     */
+    private suspend fun emitPlaybackLinks(
+        streamUrl: String,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        val origin = originOf(streamUrl)
+        val headers = playbackHeaders(origin)
+
+        val variants = runCatching { parseHlsVariants(streamUrl, headers) }
+            .getOrDefault(emptyList())
+
+        if (variants.isEmpty()) {
+            // Defensive fallback — keep the user able to play even if
+            // the master shape changes upstream.
+            callback(
+                newExtractorLink(
+                    source = name,
+                    name = name,
+                    url = streamUrl,
+                    type = ExtractorLinkType.M3U8,
+                ) {
+                    this.referer = "$origin/"
+                    this.quality = Qualities.Unknown.value
+                    this.headers = headers
+                }
+            )
+            return
+        }
+
+        variants.forEach { v ->
+            callback(
+                newExtractorLink(
+                    source = name,
+                    name = if (v.height > 0) "$name ${v.height}p" else name,
+                    url = v.url,
+                    type = ExtractorLinkType.M3U8,
+                ) {
+                    this.referer = "$origin/"
+                    this.quality = qualityForHeight(v.height)
+                    // Forwarded by ExoPlayer on every segment + media
+                    // playlist request — keeps majorplay's CDN from
+                    // throttling because we look like a real browser.
+                    this.headers = headers
+                }
+            )
+        }
+    }
+
+    private data class HlsVariant(val url: String, val height: Int, val bandwidth: Int)
+
+    /**
+     * Minimal #EXT-X-STREAM-INF parser. We only need enough to map a
+     * variant URI to a height and bandwidth — the full HLS grammar lives
+     * in the player.
+     */
+    private suspend fun parseHlsVariants(
+        masterUrl: String,
+        headers: Map<String, String>,
+    ): List<HlsVariant> {
+        val text = app.get(masterUrl, headers = headers, timeout = 30L).text
+        if (!text.contains("#EXT-X-STREAM-INF")) return emptyList()
+
+        val lines = text.lines()
+        val out = mutableListOf<HlsVariant>()
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i].trim()
+            if (line.startsWith("#EXT-X-STREAM-INF")) {
+                // The URI is the next non-blank, non-comment line.
+                var j = i + 1
+                while (j < lines.size) {
+                    val candidate = lines[j].trim()
+                    if (candidate.isNotEmpty() && !candidate.startsWith("#")) break
+                    j++
+                }
+                if (j >= lines.size) break
+
+                val uri = lines[j].trim()
+                val resolution = STREAM_INF_RESOLUTION.find(line)?.groupValues?.get(1)?.toIntOrNull()
+                val nameAttr = STREAM_INF_NAME.find(line)?.groupValues?.get(1)
+                val bandwidth = STREAM_INF_BANDWIDTH.find(line)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                val height = resolution
+                    ?: nameAttr?.let { HEIGHT_FROM_NAME.find(it)?.value?.toIntOrNull() }
+                    ?: 0
+
+                out += HlsVariant(
+                    url = resolveAgainst(masterUrl, uri),
+                    height = height,
+                    bandwidth = bandwidth,
+                )
+                i = j + 1
+            } else {
+                i++
+            }
+        }
+        return out
+    }
+
+    private fun qualityForHeight(height: Int): Int = when {
+        height >= 2160 -> Qualities.P2160.value
+        height >= 1440 -> Qualities.P1440.value
+        height >= 1080 -> Qualities.P1080.value
+        height >= 720 -> Qualities.P720.value
+        height >= 480 -> Qualities.P480.value
+        height >= 360 -> Qualities.P360.value
+        height >= 240 -> Qualities.P240.value
+        height >= 144 -> Qualities.P144.value
+        else -> Qualities.Unknown.value
+    }
+
+    /**
+     * Resolves [ref] against [baseUrl] using HLS-flavored relative URI
+     * rules. Handles absolute URLs, protocol-relative URLs, absolute
+     * paths, and the common case of a sibling file
+     * ("data-287173.json?t=…" relative to ".../config-545186.json?t=…").
+     */
+    private fun resolveAgainst(baseUrl: String, ref: String): String {
+        if (ref.startsWith("http://") || ref.startsWith("https://")) return ref
+        if (ref.startsWith("//")) {
+            val scheme = baseUrl.substringBefore("://", "https")
+            return "$scheme:$ref"
+        }
+        if (ref.startsWith("/")) {
+            return originOf(baseUrl) + ref
+        }
+        // Strip query + fragment from base before taking the parent dir,
+        // then re-attach nothing: HLS variant URIs carry their own query.
+        val cleanBase = baseUrl.substringBefore('?').substringBefore('#')
+        val parent = cleanBase.substringBeforeLast('/', cleanBase)
+        return "$parent/$ref"
     }
 
     /**
