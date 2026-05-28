@@ -442,7 +442,11 @@ class IdlixProvider : MainAPI() {
             callback(
                 newExtractorLink(
                     source = name,
-                    name = if (v.height > 0) "$name ${v.height}p" else name,
+                    // Cloudstream's UI appends the quality label itself
+                    // based on `this.quality`, so keep the link name to
+                    // just the source — otherwise it renders as
+                    // "Idlix 720p 720p".
+                    name = name,
                     url = v.url,
                     type = ExtractorLinkType.M3U8,
                 ) {
@@ -531,28 +535,28 @@ class IdlixProvider : MainAPI() {
      * the same `?t=…` token (HTTP 401). Browsers happen to inherit it
      * because they resolve relative URIs against the *full* master URL,
      * query and all. So when [ref] doesn't carry its own query, we
-     * graft the master's query+fragment onto the resolved URL.
+     * graft only the master's `t=…` param onto the resolved URL —
+     * `pm=browser` is a hint for the redeem endpoint and is not
+     * required (and not validated) by the variant/segment endpoints.
      */
     private fun resolveAgainst(baseUrl: String, ref: String): String {
-        // Pull the master's query/fragment up front — every branch below
-        // needs it for the no-own-query case.
-        val baseQueryAndFragment = run {
+        // Extract just `t=…` from the master URL (drop pm=browser etc.).
+        val inheritedQuery: String = run {
             val q = baseUrl.indexOf('?')
-            val f = baseUrl.indexOf('#')
-            val cut = when {
-                q >= 0 && f >= 0 -> minOf(q, f)
-                q >= 0 -> q
-                f >= 0 -> f
-                else -> -1
-            }
-            if (cut < 0) "" else baseUrl.substring(cut)
+            if (q < 0) return@run ""
+            val rawQuery = baseUrl.substring(q + 1).substringBefore('#')
+            val token = rawQuery
+                .split('&')
+                .firstOrNull { it.startsWith("t=") }
+                ?: return@run ""
+            "?$token"
         }
 
         fun withInheritedQuery(resolved: String): String =
-            if (resolved.contains('?') || resolved.contains('#') || baseQueryAndFragment.isEmpty()) {
+            if (resolved.contains('?') || inheritedQuery.isEmpty()) {
                 resolved
             } else {
-                resolved + baseQueryAndFragment
+                resolved + inheritedQuery
             }
 
         if (ref.startsWith("http://") || ref.startsWith("https://")) return ref
@@ -564,8 +568,8 @@ class IdlixProvider : MainAPI() {
             return withInheritedQuery(originOf(baseUrl) + ref)
         }
         // Strip query + fragment from base before taking the parent dir,
-        // then re-attach the master's query if the variant didn't supply
-        // one of its own.
+        // then re-attach the master's `t=…` if the variant didn't supply
+        // a query of its own.
         val cleanBase = baseUrl.substringBefore('?').substringBefore('#')
         val parent = cleanBase.substringBeforeLast('/', cleanBase)
         return withInheritedQuery("$parent/$ref")
