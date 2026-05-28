@@ -1,5 +1,5 @@
 // Use an integer for version numbers
-version = 9
+version = 15
 
 cloudstream {
     description = "Idlix - port of qolbudr/idlix-addons-stremio"
