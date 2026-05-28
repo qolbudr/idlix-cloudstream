@@ -523,22 +523,52 @@ class IdlixProvider : MainAPI() {
      * Resolves [ref] against [baseUrl] using HLS-flavored relative URI
      * rules. Handles absolute URLs, protocol-relative URLs, absolute
      * paths, and the common case of a sibling file
-     * ("data-287173.json?t=…" relative to ".../config-545186.json?t=…").
+     * ("data-287173.json" relative to ".../config-545186.json?t=…").
+     *
+     * majorplay quirk: the master playlist (config-*.json?t=…&pm=browser)
+     * lists its variants as bare paths without any query string, but
+     * the CDN rejects every variant/segment fetch that doesn't carry
+     * the same `?t=…` token (HTTP 401). Browsers happen to inherit it
+     * because they resolve relative URIs against the *full* master URL,
+     * query and all. So when [ref] doesn't carry its own query, we
+     * graft the master's query+fragment onto the resolved URL.
      */
     private fun resolveAgainst(baseUrl: String, ref: String): String {
+        // Pull the master's query/fragment up front — every branch below
+        // needs it for the no-own-query case.
+        val baseQueryAndFragment = run {
+            val q = baseUrl.indexOf('?')
+            val f = baseUrl.indexOf('#')
+            val cut = when {
+                q >= 0 && f >= 0 -> minOf(q, f)
+                q >= 0 -> q
+                f >= 0 -> f
+                else -> -1
+            }
+            if (cut < 0) "" else baseUrl.substring(cut)
+        }
+
+        fun withInheritedQuery(resolved: String): String =
+            if (resolved.contains('?') || resolved.contains('#') || baseQueryAndFragment.isEmpty()) {
+                resolved
+            } else {
+                resolved + baseQueryAndFragment
+            }
+
         if (ref.startsWith("http://") || ref.startsWith("https://")) return ref
         if (ref.startsWith("//")) {
             val scheme = baseUrl.substringBefore("://", "https")
-            return "$scheme:$ref"
+            return withInheritedQuery("$scheme:$ref")
         }
         if (ref.startsWith("/")) {
-            return originOf(baseUrl) + ref
+            return withInheritedQuery(originOf(baseUrl) + ref)
         }
         // Strip query + fragment from base before taking the parent dir,
-        // then re-attach nothing: HLS variant URIs carry their own query.
+        // then re-attach the master's query if the variant didn't supply
+        // one of its own.
         val cleanBase = baseUrl.substringBefore('?').substringBefore('#')
         val parent = cleanBase.substringBeforeLast('/', cleanBase)
-        return "$parent/$ref"
+        return withInheritedQuery("$parent/$ref")
     }
 
     /**
