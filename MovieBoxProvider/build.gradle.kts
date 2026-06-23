@@ -1,19 +1,28 @@
-version = 2
+// Use an integer for version numbers
+version = 3
 
 cloudstream {
-    description = "MovieBox - search & stream movies/series from MovieBox API"
-    authors = listOf("MovieBox")
+    description = "Moviebox plugins for cloudstream"
+    authors = listOf("qolbudr (original)")
 
-    status = 1 // 0=Down, 1=Ok, 2=Slow, 3=Beta-only
+    /**
+     * Status int as one of the following:
+     * 0: Down
+     * 1: Ok
+     * 2: Slow
+     * 3: Beta-only
+     **/
+    status = 1
 
     tvTypes = listOf(
         "Movie",
         "TvSeries",
+        "AsianDrama",
     )
 
-    language = "en"
+    language = "id"
 
-    iconUrl = "https://moviebox-fastapi.vercel.app/favicon.ico"
+    iconUrl = "https://themoviebox.xyz/favicon.ico"
 }
 
 android {
