@@ -119,10 +119,14 @@ class MovieBoxProvider : MainAPI() {
         ).parsedSafe<MovieBoxDownloadResponse>() ?: return false
 
         val links = res.download_links.orEmpty().filter { link ->
-            if (parsed.type == "series") {
+            if (parsed.type == "series" && parsed.season > 0) {
                 link.season == parsed.season && link.episode == parsed.episode
+            } else if (parsed.type == "series") {
+                // Fallback: no season filter — return all
+                true
             } else {
-                true // movie — return all resolutions
+                // Movie — return all resolutions (season/episode is null in API)
+                true
             }
         }
 

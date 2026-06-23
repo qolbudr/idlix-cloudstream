@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 cloudstream {
     description = "MovieBox - search & stream movies/series from MovieBox API"
