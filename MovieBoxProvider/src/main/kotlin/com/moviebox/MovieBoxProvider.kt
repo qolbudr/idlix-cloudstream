@@ -82,7 +82,8 @@ class MovieBoxProvider : MainAPI() {
     /* ---------- Detail ---------- */
 
     override suspend fun load(url: String): LoadResponse {
-        val json = fetchJson("$mainUrl/api/info/$url")
+        val subjectId = url.substringAfterLast("/").substringBefore("?").substringBefore("#")
+        val json = fetchJson("$mainUrl/api/info/$subjectId")
         val data = json["data"] as? Map<*, *>
             ?: throw ErrorLoadingException("No data in response")
         val subject = data["subject"] as? Map<*, *>
@@ -90,7 +91,7 @@ class MovieBoxProvider : MainAPI() {
 
         val subjectType = (subject["subjectType"] as? Int) ?: 1
         val title = (subject["title"] as? String) ?: "Unknown"
-        val subjectId = (subject["subjectId"] as? String) ?: url
+        val resolvedSubjectId = (subject["subjectId"] as? String) ?: subjectId
         val coverUrl = (subject["cover"] as? Map<*, *>)?.get("url") as? String
         val description = subject["description"] as? String
         val releaseDate = subject["releaseDate"] as? String
@@ -121,7 +122,7 @@ class MovieBoxProvider : MainAPI() {
                 val maxEp = (m["maxEp"] as? Int) ?: return@forEach
                 for (ep in 1..maxEp) {
                     val payload = MovieBoxLoadData(
-                        subjectId = subjectId,
+                        subjectId = resolvedSubjectId,
                         season = se,
                         episode = ep,
                     ).toJson()
@@ -133,7 +134,7 @@ class MovieBoxProvider : MainAPI() {
                 }
             }
 
-            return newTvSeriesLoadResponse(title, subjectId, TvType.TvSeries, episodes) {
+            return newTvSeriesLoadResponse(title, resolvedSubjectId, TvType.TvSeries, episodes) {
                 this.posterUrl = coverUrl
                 this.backgroundPosterUrl = coverUrl
                 this.year = year
@@ -144,8 +145,8 @@ class MovieBoxProvider : MainAPI() {
                 addActors(stars)
             }
         } else {
-            val payload = MovieBoxLoadData(subjectId = subjectId).toJson()
-            return newMovieLoadResponse(title, subjectId, TvType.Movie, payload) {
+            val payload = MovieBoxLoadData(subjectId = resolvedSubjectId).toJson()
+            return newMovieLoadResponse(title, resolvedSubjectId, TvType.Movie, payload) {
                 this.posterUrl = coverUrl
                 this.backgroundPosterUrl = coverUrl
                 this.year = year
@@ -243,15 +244,16 @@ class MovieBoxProvider : MainAPI() {
         val releaseDate = m["releaseDate"] as? String
         val year = releaseDate?.substringBefore("-")?.toIntOrNull()
 
+        val apiUrl = "$mainUrl/api/info/$subjectId"
         val isSeries = subjectType == 2
 
         return if (isSeries) {
-            newTvSeriesSearchResponse(title, subjectId, TvType.TvSeries) {
+            newTvSeriesSearchResponse(title, apiUrl, TvType.TvSeries) {
                 this.posterUrl = coverUrl
                 this.year = year
             }
         } else {
-            newMovieSearchResponse(title, subjectId, TvType.Movie) {
+            newMovieSearchResponse(title, apiUrl, TvType.Movie) {
                 this.posterUrl = coverUrl
                 this.year = year
             }
