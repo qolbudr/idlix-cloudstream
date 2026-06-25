@@ -1,108 +1,84 @@
 package com.moviebox
 
+import com.fasterxml.jackson.annotation.JsonProperty
+
 /* ---------- /search ---------- */
 
 data class SearchResponseBody(
-    val status: String? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("total_results")
-    val totalResults: Int? = null,
-    val results: List<SearchResult>? = null,
+    @JsonProperty("status") val status: String? = null,
+    @JsonProperty("total_results") val totalResults: Int? = null,
+    @JsonProperty("results") val results: List<SearchResult>? = null,
 )
 
 data class SearchResult(
-    @com.fasterxml.jackson.annotation.JsonProperty("subject_id")
-    val subjectId: String? = null,
-    val title: String? = null,
-    val type: String? = null, // "movie" or "series"
-    val poster: String? = null,
-    val year: String? = null,
-    val rating: Double? = null,
-    val seasons: Int? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("duration_seconds")
-    val durationSeconds: Long? = null,
-    val languages: List<String>? = null,
-    val country: String? = null,
-    val description: String? = null,
-    val genre: List<String>? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("has_resource")
-    val hasResource: Boolean? = null,
+    @JsonProperty("subject_id") val subjectId: String? = null,
+    @JsonProperty("title") val title: String? = null,
+    @JsonProperty("type") val type: String? = null, // "movie" or "series"
+    @JsonProperty("poster") val poster: String? = null,
+    @JsonProperty("year") val year: String? = null,
+    @JsonProperty("rating") val rating: Double? = null,
+    @JsonProperty("seasons") val seasons: Int? = null,
+    @JsonProperty("duration_seconds") val durationSeconds: Long? = null,
+    @JsonProperty("languages") val languages: List<String>? = null,
+    @JsonProperty("country") val country: String? = null,
+    @JsonProperty("description") val description: String? = null,
+    @JsonProperty("genre") val genre: List<String>? = null,
+    @JsonProperty("has_resource") val hasResource: Boolean? = null,
 )
 
 /* ---------- /get_download_links ---------- */
 
 data class DownloadLinksResponse(
-    val status: String? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("subject_id")
-    val subjectId: String? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("total_links")
-    val totalLinks: Int? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("seasons_found")
-    val seasonsFound: List<Int>? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("episodes_per_season")
-    val episodesPerSeason: Map<String, Int>? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("resolutions_found")
-    val resolutionsFound: List<Int>? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("download_links")
-    val downloadLinks: List<DownloadLink>? = null,
+    @JsonProperty("status") val status: String? = null,
+    @JsonProperty("subject_id") val subjectId: String? = null,
+    @JsonProperty("total_links") val totalLinks: Int? = null,
+    @JsonProperty("seasons_found") val seasonsFound: List<Int>? = null,
+    @JsonProperty("episodes_per_season") val episodesPerSeason: Map<String, Int>? = null,
+    @JsonProperty("resolutions_found") val resolutionsFound: List<Int>? = null,
+    @JsonProperty("download_links") val downloadLinks: List<DownloadLink>? = null,
 )
 
 data class DownloadLink(
-    val url: String? = null,
-    val resolution: Int? = null,
-    val size: String? = null,
-    val season: Int? = null,
-    val episode: Int? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("resource_id")
-    val resourceId: String? = null,
-    val codec: String? = null,
-    val duration: Long? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("source_url")
-    val sourceUrl: String? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("subtitles_available")
-    val subtitlesAvailable: Boolean? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("has_arabic_subtitle")
-    val hasArabicSubtitle: Boolean? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("arabic_subtitle_url")
-    val arabicSubtitleUrl: String? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("all_subtitles")
-    val allSubtitles: List<SubtitleInfo>? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("total_languages")
-    val totalLanguages: Int? = null,
+    @JsonProperty("url") val url: String? = null,
+    @JsonProperty("resolution") val resolution: Int? = null,
+    @JsonProperty("size") val size: String? = null,
+    @JsonProperty("season") val season: Int? = null,
+    @JsonProperty("episode") val episode: Int? = null,
+    @JsonProperty("resource_id") val resourceId: String? = null,
+    @JsonProperty("codec") val codec: String? = null,
+    @JsonProperty("duration") val duration: Long? = null,
+    @JsonProperty("source_url") val sourceUrl: String? = null,
+    @JsonProperty("subtitles_available") val subtitlesAvailable: Boolean? = null,
+    @JsonProperty("has_arabic_subtitle") val hasArabicSubtitle: Boolean? = null,
+    @JsonProperty("arabic_subtitle_url") val arabicSubtitleUrl: String? = null,
+    @JsonProperty("all_subtitles") val allSubtitles: List<SubtitleInfo>? = null,
+    @JsonProperty("total_languages") val totalLanguages: Int? = null,
 )
 
 data class SubtitleInfo(
-    @com.fasterxml.jackson.annotation.JsonProperty("language_code")
-    val languageCode: String? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("language_name")
-    val languageName: String? = null,
-    val url: String? = null,
-    val size: Long? = null,
-    val delay: Int? = null,
+    @JsonProperty("language_code") val languageCode: String? = null,
+    @JsonProperty("language_name") val languageName: String? = null,
+    @JsonProperty("url") val url: String? = null,
+    @JsonProperty("size") val size: Long? = null,
+    @JsonProperty("delay") val delay: Int? = null,
 )
 
 /* ---------- /get_subtitles (fallback) ---------- */
 
 data class SubtitlesResponse(
-    val status: String? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("subject_id")
-    val subjectId: String? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("resource_id")
-    val resourceId: String? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("has_arabic")
-    val hasArabic: Boolean? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("arabic_subtitle")
-    val arabicSubtitle: Any? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("all_subtitles")
-    val allSubtitles: List<SubtitleInfo>? = null,
-    @com.fasterxml.jackson.annotation.JsonProperty("total_languages")
-    val totalLanguages: Int? = null,
+    @JsonProperty("status") val status: String? = null,
+    @JsonProperty("subject_id") val subjectId: String? = null,
+    @JsonProperty("resource_id") val resourceId: String? = null,
+    @JsonProperty("has_arabic") val hasArabic: Boolean? = null,
+    @JsonProperty("arabic_subtitle") val arabicSubtitle: Any? = null,
+    @JsonProperty("all_subtitles") val allSubtitles: List<SubtitleInfo>? = null,
+    @JsonProperty("total_languages") val totalLanguages: Int? = null,
 )
 
 /* ---------- payload encoded in LoadResponse.data ---------- */
 
 data class LoadData(
-    @com.fasterxml.jackson.annotation.JsonProperty("subject_id")
-    val subjectId: String,
-    val season: Int? = null,
-    val episode: Int? = null,
+    @JsonProperty("subject_id") val subjectId: String,
+    @JsonProperty("season") val season: Int? = null,
+    @JsonProperty("episode") val episode: Int? = null,
 )

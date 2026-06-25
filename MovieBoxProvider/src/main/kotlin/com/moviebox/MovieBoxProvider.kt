@@ -92,6 +92,12 @@ class MovieBoxProvider : MainAPI() {
         val poster = qParams["poster"]?.ifBlank { null }
         val year = qParams["year"]?.toIntOrNull()
         val contentType = qParams["type"]
+        val rating = qParams["rating"]?.toDoubleOrNull()
+        val plot = qParams["plot"]?.ifBlank { null }
+        val duration = qParams["duration"]?.toIntOrNull()  // minutes
+        val tags = qParams["genre"]?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }
+        val country = qParams["country"]?.ifBlank { null }
+        val score = rating?.toString()?.let { Score.from10(it) }
 
         // Fetch download links for resolution/season info
         val linksUrl = "$api/get_download_links?subject_id=$subjectId"
@@ -106,12 +112,20 @@ class MovieBoxProvider : MainAPI() {
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.year = year
+                this.plot = plot
+                this.score = score
+                this.duration = duration
+                this.tags = tags
             }
         } else {
             val data = LoadData(subjectId = subjectId).toJson()
             newMovieLoadResponse(title, url, TvType.Movie, data) {
                 this.posterUrl = poster
                 this.year = year
+                this.plot = plot
+                this.score = score
+                this.duration = duration
+                this.tags = tags
             }
         }
     }
@@ -232,12 +246,18 @@ class MovieBoxProvider : MainAPI() {
         val y = year?.substringBefore("-")?.toIntOrNull()
 
         // Store metadata in URL so load() can use it (no detail API endpoint)
+        val enc = { s: String -> java.net.URLEncoder.encode(s, "UTF-8") }
         val detailUrl = buildString {
             append("$api/meta/$id")
-            append("?title=${java.net.URLEncoder.encode(t, "UTF-8")}")
-            if (posterUrl != null) append("&poster=${java.net.URLEncoder.encode(posterUrl, "UTF-8")}")
+            append("?title=${enc(t)}")
+            if (posterUrl != null) append("&poster=${enc(posterUrl)}")
             if (y != null) append("&year=$y")
             append("&type=${type ?: "movie"}")
+            if (rating != null) append("&rating=$rating")
+            if (!description.isNullOrBlank()) append("&plot=${enc(description)}")
+            if (durationSeconds != null && durationSeconds > 0) append("&duration=${durationSeconds / 60}")
+            if (!genre.isNullOrEmpty()) append("&genre=${enc(genre.joinToString(","))}")
+            if (!country.isNullOrBlank()) append("&country=${enc(country)}")
         }
 
         return if (type == "series") {

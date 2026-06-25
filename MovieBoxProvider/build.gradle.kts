@@ -1,4 +1,4 @@
-version = 3
+version = 4
 
 cloudstream {
     description = "MovieBox - movies and series from moviebox-fastapi"
