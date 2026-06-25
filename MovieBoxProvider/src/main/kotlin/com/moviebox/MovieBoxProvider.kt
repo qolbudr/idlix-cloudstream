@@ -22,7 +22,6 @@ import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.getQualityFromString
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
@@ -40,16 +39,18 @@ class MovieBoxProvider : MainAPI() {
 
     private val api = mainUrl
 
+    private val apiHeaders = mapOf(
+        "Accept" to "application/json, text/plain, */*",
+    )
+
     /**
      * Homepage rows built from search queries since there's no browse endpoint.
      */
     override val mainPage = mainPageOf(
-        "$api/search?query=action&original_language=en&limit=20" to "Action",
-        "$api/search?query=comedy&original_language=en&limit=20" to "Comedy",
-        "$api/search?query=drama&original_language=en&limit=20" to "Drama",
-        "$api/search?query=thriller&original_language=en&limit=20" to "Thriller",
-        "$api/search?query=horror&original_language=en&limit=20" to "Horror",
-        "$api/search?query=romance&original_language=en&limit=20" to "Romance",
+        "$api/search?query=action&original_language=en&limit=20" to "Action Movies",
+        "$api/search?query=comedy&original_language=en&limit=20" to "Comedy Movies",
+        "$api/search?query=drama&original_language=en&limit=20" to "Drama Movies",
+        "$api/search?query=horror&original_language=en&limit=20" to "Horror Movies",
     )
 
     override suspend fun getMainPage(
@@ -57,7 +58,7 @@ class MovieBoxProvider : MainAPI() {
         request: MainPageRequest,
     ): HomePageResponse {
         val url = if (request.data.contains("%d")) request.data.format(page) else request.data
-        val res = app.get(url, timeout = 30L).parsedSafe<SearchResponseBody>()
+        val res = app.get(url, headers = apiHeaders, timeout = 30L).parsedSafe<SearchResponseBody>()
         val items = res?.results?.mapNotNull { it.toSearchResponse() } ?: emptyList()
         return newHomePageResponse(request.name, items)
     }
@@ -65,60 +66,51 @@ class MovieBoxProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val q = java.net.URLEncoder.encode(query, "UTF-8")
         val url = "$api/search?query=$q&original_language=en&limit=30"
-        val res = app.get(url, timeout = 30L).parsedSafe<SearchResponseBody>()
+        val res = app.get(url, headers = apiHeaders, timeout = 30L).parsedSafe<SearchResponseBody>()
         return res?.results?.mapNotNull { it.toSearchResponse() } ?: emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val subjectId = url.substringAfterLast("/")
+        // URL format: $api/meta/$subjectId?title=...&poster=...&year=...&type=movie|series
+        val uri = java.net.URI(url)
+        val subjectId = uri.path.substringAfterLast("/")
         if (subjectId.isBlank()) throw ErrorLoadingException("Invalid subject ID")
 
-        // Fetch download links to distinguish movie vs series + get metadata
+        val qParams = uri.query?.split("&").orEmpty()
+            .mapNotNull { param ->
+                val eq = param.indexOf("=")
+                if (eq < 0) return@mapNotNull null
+                param.substring(0, eq) to java.net.URLDecoder.decode(param.substring(eq + 1), "UTF-8")
+            }.toMap()
+
+        val title = qParams["title"] ?: "Unknown"
+        val poster = qParams["poster"]?.ifBlank { null }
+        val year = qParams["year"]?.toIntOrNull()
+        val contentType = qParams["type"]
+
+        // Fetch download links for resolution/season info
         val linksUrl = "$api/get_download_links?subject_id=$subjectId"
-        val linksRes = app.get(linksUrl, timeout = 30L).parsedSafe<DownloadLinksResponse>()
+        val linksRes = app.get(linksUrl, headers = apiHeaders, timeout = 30L)
+            .parsedSafe<DownloadLinksResponse>()
             ?: throw ErrorLoadingException("No data for subject $subjectId")
 
-        // Get metadata from search
-        val meta = runCatching {
-            val searchUrl = "$api/search?query=$subjectId&original_language=en&limit=5"
-            app.get(searchUrl, timeout = 30L).parsedSafe<SearchResponseBody>()
-                ?.results?.firstOrNull { it.subject_id == subjectId }
-        }.getOrNull()
-
-        val title = meta?.title ?: "Unknown"
-        val poster = meta?.poster
-        val year = meta?.year?.substringBefore("-")?.toIntOrNull()
-        val score = meta?.rating?.toString()?.let { Score.from10(it) }
-        val tags = meta?.genre.orEmpty()
-        val plot = meta?.description
-
-        val isSeries = linksRes.seasons_found?.isNotEmpty() == true
+        val isSeries = linksRes.seasons_found?.isNotEmpty() == true || contentType == "series"
 
         return if (isSeries) {
             val episodes = buildEpisodes(subjectId, linksRes)
-            newTvSeriesLoadResponse(title, "$api/subject/$subjectId", TvType.TvSeries, episodes) {
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.year = year
-                this.plot = plot
-                this.tags = tags
-                this.score = score
             }
         } else {
             val data = LoadData(subject_id = subjectId).toJson()
-            newMovieLoadResponse(title, "$api/subject/$subjectId", TvType.Movie, data) {
+            newMovieLoadResponse(title, url, TvType.Movie, data) {
                 this.posterUrl = poster
                 this.year = year
-                this.plot = plot
-                this.tags = tags
-                this.score = score
             }
         }
     }
 
-    /**
-     * Build episode list from download links response.
-     * Groups links by (season, episode) and creates one Episode per pair.
-     */
     private fun buildEpisodes(subjectId: String, res: DownloadLinksResponse): List<Episode> {
         val seen = mutableSetOf<Pair<Int, Int>>()
         val episodes = mutableListOf<Episode>()
@@ -150,22 +142,20 @@ class MovieBoxProvider : MainAPI() {
         val parsed = runCatching { parseJson<LoadData>(data) }.getOrNull() ?: return false
         if (parsed.subject_id.isBlank()) return false
 
-        // Fetch all download links for this subject
         val linksUrl = "$api/get_download_links?subject_id=${parsed.subject_id}"
-        val res = app.get(linksUrl, timeout = 30L).parsedSafe<DownloadLinksResponse>() ?: return false
+        val res = app.get(linksUrl, headers = apiHeaders, timeout = 30L)
+            .parsedSafe<DownloadLinksResponse>() ?: return false
 
-        // Filter by season/episode for series, or take all for movies
         val filtered = res.download_links.orEmpty().filter { link ->
             if (parsed.season != null && parsed.episode != null) {
                 link.season == parsed.season && link.episode == parsed.episode
             } else {
-                true // movie — all resolutions
+                true
             }
         }
 
         if (filtered.isEmpty()) return false
 
-        // Emit one ExtractorLink per resolution
         filtered.forEach { link ->
             val streamUrl = link.url ?: return@forEach
             val label = if (link.resolution != null) "${link.resolution}p" else "Auto"
@@ -182,7 +172,6 @@ class MovieBoxProvider : MainAPI() {
             )
         }
 
-        // Emit subtitles from the first link that has them
         filtered.firstOrNull { !it.all_subtitles.isNullOrEmpty() }?.all_subtitles?.forEach { sub ->
             val subUrl = sub.url ?: return@forEach
             val label = sub.language_name ?: sub.language_code ?: "Subtitle"
@@ -210,13 +199,22 @@ class MovieBoxProvider : MainAPI() {
         val posterUrl = poster
         val y = year?.substringBefore("-")?.toIntOrNull()
 
+        // Store metadata in URL so load() can use it (no detail API endpoint)
+        val detailUrl = buildString {
+            append("$api/meta/$id")
+            append("?title=${java.net.URLEncoder.encode(t, "UTF-8")}")
+            if (posterUrl != null) append("&poster=${java.net.URLEncoder.encode(posterUrl, "UTF-8")}")
+            if (y != null) append("&year=$y")
+            append("&type=${type ?: "movie"}")
+        }
+
         return if (type == "series") {
-            newTvSeriesSearchResponse(t, "$api/subject/$id", TvType.TvSeries) {
+            newTvSeriesSearchResponse(t, detailUrl, TvType.TvSeries) {
                 this.posterUrl = posterUrl
                 this.year = y
             }
         } else {
-            newMovieSearchResponse(t, "$api/subject/$id", TvType.Movie) {
+            newMovieSearchResponse(t, detailUrl, TvType.Movie) {
                 this.posterUrl = posterUrl
                 this.year = y
             }
