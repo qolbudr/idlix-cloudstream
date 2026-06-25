@@ -175,7 +175,7 @@ class MovieBoxProvider : MainAPI() {
         val links = json["download_links"] as? List<*> ?: return false
 
         var emitted = false
-        var subsEmitted = false
+        var subsLoaded = false
 
         links.forEach { dl ->
             val m = dl as? Map<*, *> ?: return@forEach
@@ -190,6 +190,7 @@ class MovieBoxProvider : MainAPI() {
             val dlUrl = (m["url"] as? String) ?: return@forEach
             val resolution = (m["resolution"] as? Int)
             val size = (m["size"] as? String)
+            val resourceId = (m["resource_id"] as? String)
 
             emitted = true
 
@@ -211,10 +212,11 @@ class MovieBoxProvider : MainAPI() {
                 }
             )
 
-            // Emit subtitles once (same subs across resolutions)
-            if (!subsEmitted) {
-                subsEmitted = true
-                val allSubs = m["all_subtitles"] as? List<*>
+            // Load subtitles once via /get_subtitles
+            if (!subsLoaded && resourceId != null) {
+                subsLoaded = true
+                val subJson = fetchJson("$fastApiUrl/get_subtitles?subject_id=${parsed.subjectId}&resource_id=$resourceId")
+                val allSubs = subJson["all_subtitles"] as? List<*>
                 allSubs?.forEach { sub ->
                     val sm = sub as? Map<*, *> ?: return@forEach
                     val subUrl = (sm["url"] as? String) ?: return@forEach
