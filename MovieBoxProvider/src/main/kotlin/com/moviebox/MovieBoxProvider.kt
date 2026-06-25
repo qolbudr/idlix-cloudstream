@@ -41,6 +41,7 @@ class MovieBoxProvider : MainAPI() {
 
     private val apiHeaders = mapOf(
         "Accept" to "application/json, text/plain, */*",
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     )
 
     /**
@@ -59,7 +60,9 @@ class MovieBoxProvider : MainAPI() {
     ): HomePageResponse {
         val url = if (request.data.contains("%d")) request.data.format(page) else request.data
         val res = app.get(url, headers = apiHeaders, timeout = 30L).parsedSafe<SearchResponseBody>()
-        val items = res?.results?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+        val items = res?.results?.mapNotNull {
+            if (it.hasResource == true) it.toSearchResponse() else null
+        } ?: emptyList()
         return newHomePageResponse(request.name, items)
     }
 
@@ -67,7 +70,9 @@ class MovieBoxProvider : MainAPI() {
         val q = java.net.URLEncoder.encode(query, "UTF-8")
         val url = "$api/search?query=$q&original_language=en&limit=30"
         val res = app.get(url, headers = apiHeaders, timeout = 30L).parsedSafe<SearchResponseBody>()
-        return res?.results?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+        return res?.results?.mapNotNull {
+            if (it.hasResource == true) it.toSearchResponse() else null
+        } ?: emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -94,7 +99,7 @@ class MovieBoxProvider : MainAPI() {
             .parsedSafe<DownloadLinksResponse>()
             ?: throw ErrorLoadingException("No data for subject $subjectId")
 
-        val isSeries = linksRes.seasons_found?.isNotEmpty() == true || contentType == "series"
+        val isSeries = linksRes.seasonsFound?.isNotEmpty() == true || contentType == "series"
 
         return if (isSeries) {
             val episodes = buildEpisodes(subjectId, linksRes)
@@ -103,7 +108,7 @@ class MovieBoxProvider : MainAPI() {
                 this.year = year
             }
         } else {
-            val data = LoadData(subject_id = subjectId).toJson()
+            val data = LoadData(subjectId = subjectId).toJson()
             newMovieLoadResponse(title, url, TvType.Movie, data) {
                 this.posterUrl = poster
                 this.year = year
@@ -115,14 +120,14 @@ class MovieBoxProvider : MainAPI() {
         val seen = mutableSetOf<Pair<Int, Int>>()
         val episodes = mutableListOf<Episode>()
 
-        res.download_links.orEmpty().forEach { link ->
+        res.downloadLinks.orEmpty().forEach { link ->
             val season = link.season ?: 1
             val ep = link.episode ?: 1
             val key = Pair(season, ep)
             if (key in seen) return@forEach
             seen += key
 
-            val data = LoadData(subject_id = subjectId, season = season, episode = ep).toJson()
+            val data = LoadData(subjectId = subjectId, season = season, episode = ep).toJson()
             episodes += newEpisode(data) {
                 this.name = "S${season}E${ep}"
                 this.season = season
@@ -140,13 +145,13 @@ class MovieBoxProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
         val parsed = runCatching { parseJson<LoadData>(data) }.getOrNull() ?: return false
-        if (parsed.subject_id.isBlank()) return false
+        if (parsed.subjectId.isBlank()) return false
 
-        val linksUrl = "$api/get_download_links?subject_id=${parsed.subject_id}"
+        val linksUrl = "$api/get_download_links?subject_id=${parsed.subjectId}"
         val res = app.get(linksUrl, headers = apiHeaders, timeout = 30L)
             .parsedSafe<DownloadLinksResponse>() ?: return false
 
-        val filtered = res.download_links.orEmpty().filter { link ->
+        val filtered = res.downloadLinks.orEmpty().filter { link ->
             if (parsed.season != null && parsed.episode != null) {
                 link.season == parsed.season && link.episode == parsed.episode
             } else {
@@ -172,10 +177,37 @@ class MovieBoxProvider : MainAPI() {
             )
         }
 
-        filtered.firstOrNull { !it.all_subtitles.isNullOrEmpty() }?.all_subtitles?.forEach { sub ->
-            val subUrl = sub.url ?: return@forEach
-            val label = sub.language_name ?: sub.language_code ?: "Subtitle"
-            subtitleCallback(newSubtitleFile(label, subUrl))
+        // Emit subtitles — download links rarely include them,
+        // so call /get_subtitles endpoint as fallback per resource.
+        var subtitlesEmitted = false
+        filtered.forEach { link ->
+            val rid = link.resourceId ?: return@forEach
+
+            // Check if inline subtitles exist first
+            if (!link.allSubtitles.isNullOrEmpty()) {
+                link.allSubtitles.forEach { sub ->
+                    val subUrl = sub.url ?: return@forEach
+                    val label = sub.languageName ?: sub.languageCode ?: "Subtitle"
+                    subtitleCallback(newSubtitleFile(label, subUrl))
+                }
+                subtitlesEmitted = true
+                return@forEach
+            }
+
+            // Fallback: fetch from /get_subtitles endpoint
+            if (!subtitlesEmitted) {
+                runCatching {
+                    val subUrl = "$api/get_subtitles?subject_id=${parsed.subjectId}&resource_id=$rid"
+                    val subRes = app.get(subUrl, headers = apiHeaders, timeout = 15L)
+                        .parsedSafe<SubtitlesResponse>()
+                    subRes?.allSubtitles?.forEach { sub ->
+                        val sUrl = sub.url ?: return@forEach
+                        val label = sub.languageName ?: sub.languageCode ?: "Subtitle"
+                        subtitleCallback(newSubtitleFile(label, sUrl))
+                    }
+                }
+                subtitlesEmitted = true
+            }
         }
 
         return true
@@ -195,7 +227,7 @@ class MovieBoxProvider : MainAPI() {
 
     private fun SearchResult.toSearchResponse(): SearchResponse? {
         val t = title ?: return null
-        val id = subject_id ?: return null
+        val id = subjectId ?: return null
         val posterUrl = poster
         val y = year?.substringBefore("-")?.toIntOrNull()
 
