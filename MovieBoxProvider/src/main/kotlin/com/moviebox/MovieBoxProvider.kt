@@ -1,9 +1,11 @@
 package com.moviebox
 
+import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.Score
@@ -16,7 +18,6 @@ import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
-import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -25,132 +26,139 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.newSubtitleFile
 
 class MovieBoxProvider : MainAPI() {
-    override var mainUrl = "https://moviebox-fastapi.vercel.app"
+    override var mainUrl = "https://moviebox-api-theta.vercel.app"
     override var name = "MovieBox"
     override val hasMainPage = true
     override var lang = "en"
     override val hasDownloadSupport = true
-    override val supportedTypes = setOf(
-        TvType.Movie,
-        TvType.TvSeries,
-    )
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    private val api = mainUrl
-
-    private val apiHeaders = mapOf(
-        "Accept" to "application/json, text/plain, */*",
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    )
-
-    /**
-     * Homepage rows built from search queries since there's no browse endpoint.
-     */
     override val mainPage = mainPageOf(
-        "$api/search?query=action&original_language=en&limit=20" to "Action Movies",
-        "$api/search?query=comedy&original_language=en&limit=20" to "Comedy Movies",
-        "$api/search?query=drama&original_language=en&limit=20" to "Drama Movies",
-        "$api/search?query=horror&original_language=en&limit=20" to "Horror Movies",
+        "$mainUrl/api/homepage" to "Home",
+        "$mainUrl/api/trending" to "Trending",
     )
+
+    /* ---------- Homepage ---------- */
 
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest,
     ): HomePageResponse {
-        val url = if (request.data.contains("%d")) request.data.format(page) else request.data
-        val res = app.get(url, headers = apiHeaders, timeout = 30L).parsedSafe<SearchResponseBody>()
-        val items = res?.results?.mapNotNull {
-            if (it.hasResource == true) it.toSearchResponse() else null
-        } ?: emptyList()
+        val json = fetchJson(request.data)
+        val data = json["data"] as? Map<*, *>
+            ?: return newHomePageResponse(request.name, emptyList())
+
+        val items = if (request.data.contains("/trending")) {
+            (data["subjectList"] as? List<*>)
+                ?.mapNotNull { it.toSearchResponse() }
+                ?: emptyList()
+        } else {
+            val operatingList = data["operatingList"] as? List<*>
+                ?: return newHomePageResponse(request.name, emptyList())
+            operatingList.flatMap { section ->
+                val m = section as? Map<*, *> ?: return@flatMap emptyList()
+                val subjects = m["subjects"] as? List<*>
+                    ?: return@flatMap emptyList()
+                subjects.mapNotNull { it.toSearchResponse() }
+            }
+        }
+
         return newHomePageResponse(request.name, items)
     }
 
+    /* ---------- Search ---------- */
+
     override suspend fun search(query: String): List<SearchResponse> {
-        val q = java.net.URLEncoder.encode(query, "UTF-8")
-        val url = "$api/search?query=$q&original_language=en&limit=30"
-        val res = app.get(url, headers = apiHeaders, timeout = 30L).parsedSafe<SearchResponseBody>()
-        return res?.results?.mapNotNull {
-            if (it.hasResource == true) it.toSearchResponse() else null
-        } ?: emptyList()
+        val encoded = java.net.URLEncoder.encode(query, "UTF-8")
+        val json = fetchJson("$mainUrl/api/search/$encoded")
+        val data = json["data"] as? Map<*, *> ?: return emptyList()
+        val items = data["items"] as? List<*> ?: return emptyList()
+        return items.mapNotNull { it.toSearchResponse() }
     }
+
+    /* ---------- Detail ---------- */
 
     override suspend fun load(url: String): LoadResponse {
-        // URL format: $api/meta/$subjectId?title=...&poster=...&year=...&type=movie|series
-        val uri = java.net.URI(url)
-        val subjectId = uri.path.substringAfterLast("/")
-        if (subjectId.isBlank()) throw ErrorLoadingException("Invalid subject ID")
+        val json = fetchJson("$mainUrl/api/info/$url")
+        val data = json["data"] as? Map<*, *>
+            ?: throw ErrorLoadingException("No data in response")
+        val subject = data["subject"] as? Map<*, *>
+            ?: throw ErrorLoadingException("No subject in data")
 
-        val qParams = uri.query?.split("&").orEmpty()
-            .mapNotNull { param ->
-                val eq = param.indexOf("=")
-                if (eq < 0) return@mapNotNull null
-                param.substring(0, eq) to java.net.URLDecoder.decode(param.substring(eq + 1), "UTF-8")
-            }.toMap()
+        val subjectType = (subject["subjectType"] as? Int) ?: 1
+        val title = (subject["title"] as? String) ?: "Unknown"
+        val subjectId = (subject["subjectId"] as? String) ?: url
+        val coverUrl = (subject["cover"] as? Map<*, *>)?.get("url") as? String
+        val description = subject["description"] as? String
+        val releaseDate = subject["releaseDate"] as? String
+        val year = releaseDate?.substringBefore("-")?.toIntOrNull()
+        val genre = subject["genre"] as? String
+        val tags = genre?.split(",")?.map { it.trim() } ?: emptyList()
+        val rating = subject["imdbRatingValue"] as? String
+        val score = rating?.let { Score.from10(it) }
+        val duration = (subject["duration"] as? Number)?.toLong()
 
-        val title = qParams["title"] ?: "Unknown"
-        val poster = qParams["poster"]?.ifBlank { null }
-        val year = qParams["year"]?.toIntOrNull()
-        val contentType = qParams["type"]
-        val rating = qParams["rating"]?.toDoubleOrNull()
-        val plot = qParams["plot"]?.ifBlank { null }
-        val duration = qParams["duration"]?.toIntOrNull()  // minutes
-        val tags = qParams["genre"]?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }
-        val country = qParams["country"]?.ifBlank { null }
-        val score = rating?.toString()?.let { Score.from10(it) }
+        val stars = (data["stars"] as? List<*>)?.mapNotNull { s ->
+            val m = s as? Map<*, *> ?: return@mapNotNull null
+            val name = m["name"] as? String ?: return@mapNotNull null
+            val avatar = m["avatarUrl"] as? String
+            Actor(name, avatar)
+        } ?: emptyList()
 
-        // Fetch download links for resolution/season info
-        val linksUrl = "$api/get_download_links?subject_id=$subjectId"
-        val linksRes = app.get(linksUrl, headers = apiHeaders, timeout = 30L)
-            .parsedSafe<DownloadLinksResponse>()
-            ?: throw ErrorLoadingException("No data for subject $subjectId")
+        val isSeries = subjectType == 2
 
-        val isSeries = linksRes.seasonsFound?.isNotEmpty() == true || contentType == "series"
+        if (isSeries) {
+            val resource = data["resource"] as? Map<*, *>
+            val seasons = resource?.get("seasons") as? List<*>
+            val episodes = mutableListOf<Episode>()
 
-        return if (isSeries) {
-            val episodes = buildEpisodes(subjectId, linksRes)
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = poster
+            seasons?.forEach { s ->
+                val m = s as? Map<*, *> ?: return@forEach
+                val se = (m["se"] as? Int) ?: return@forEach
+                val maxEp = (m["maxEp"] as? Int) ?: return@forEach
+                for (ep in 1..maxEp) {
+                    val payload = MovieBoxLoadData(
+                        subjectId = subjectId,
+                        season = se,
+                        episode = ep,
+                    ).toJson()
+                    episodes.add(newEpisode(payload) {
+                        this.season = se
+                        this.episode = ep
+                        this.name = "E$ep"
+                    })
+                }
+            }
+
+            return newTvSeriesLoadResponse(title, subjectId, TvType.TvSeries, episodes) {
+                this.posterUrl = coverUrl
+                this.backgroundPosterUrl = coverUrl
                 this.year = year
-                this.plot = plot
-                this.score = score
-                this.duration = duration
+                this.plot = description
                 this.tags = tags
+                this.score = score
+                this.duration = duration?.toInt()
+                addActors(stars)
             }
         } else {
-            val data = LoadData(subjectId = subjectId).toJson()
-            newMovieLoadResponse(title, url, TvType.Movie, data) {
-                this.posterUrl = poster
+            val payload = MovieBoxLoadData(subjectId = subjectId).toJson()
+            return newMovieLoadResponse(title, subjectId, TvType.Movie, payload) {
+                this.posterUrl = coverUrl
+                this.backgroundPosterUrl = coverUrl
                 this.year = year
-                this.plot = plot
-                this.score = score
-                this.duration = duration
+                this.plot = description
                 this.tags = tags
+                this.score = score
+                this.duration = duration?.toInt()
+                addActors(stars)
             }
         }
     }
 
-    private fun buildEpisodes(subjectId: String, res: DownloadLinksResponse): List<Episode> {
-        val seen = mutableSetOf<Pair<Int, Int>>()
-        val episodes = mutableListOf<Episode>()
-
-        res.downloadLinks.orEmpty().forEach { link ->
-            val season = link.season ?: 1
-            val ep = link.episode ?: 1
-            val key = Pair(season, ep)
-            if (key in seen) return@forEach
-            seen += key
-
-            val data = LoadData(subjectId = subjectId, season = season, episode = ep).toJson()
-            episodes += newEpisode(data) {
-                this.name = "S${season}E${ep}"
-                this.season = season
-                this.episode = ep
-            }
-        }
-
-        return episodes.sortedWith(compareBy({ it.season ?: 1 }, { it.episode ?: 1 }))
-    }
+    /* ---------- Links ---------- */
 
     override suspend fun loadLinks(
         data: String,
@@ -158,117 +166,94 @@ class MovieBoxProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val parsed = runCatching { parseJson<LoadData>(data) }.getOrNull() ?: return false
-        if (parsed.subjectId.isBlank()) return false
+        val parsed = runCatching { parseJson<MovieBoxLoadData>(data) }
+            .getOrNull() ?: return false
 
-        val linksUrl = "$api/get_download_links?subject_id=${parsed.subjectId}"
-        val res = app.get(linksUrl, headers = apiHeaders, timeout = 30L)
-            .parsedSafe<DownloadLinksResponse>() ?: return false
-
-        val filtered = res.downloadLinks.orEmpty().filter { link ->
+        val url = buildString {
+            append("$mainUrl/api/sources/${parsed.subjectId}")
             if (parsed.season != null && parsed.episode != null) {
-                link.season == parsed.season && link.episode == parsed.episode
-            } else {
-                true
+                append("?season=${parsed.season}&episode=${parsed.episode}")
             }
         }
 
-        if (filtered.isEmpty()) return false
+        val json = fetchJson(url)
+        val srcData = json["data"] as? Map<*, *> ?: return false
 
-        filtered.forEach { link ->
-            val streamUrl = link.url ?: return@forEach
-            val label = if (link.resolution != null) "${link.resolution}p" else "Auto"
+        // Emit direct MP4 links
+        val downloads = srcData["downloads"] as? List<*>
+        downloads?.forEach { dl ->
+            val m = dl as? Map<*, *> ?: return@forEach
+            val dlUrl = (m["url"] as? String) ?: return@forEach
+            val resolution = (m["resolution"] as? Int)
+            val size = (m["size"] as? String)
+
             callback(
                 newExtractorLink(
                     source = name,
-                    name = label,
-                    url = streamUrl,
+                    name = buildString {
+                        append(resolution?.let { "${it}p" } ?: "Stream")
+                        if (size != null) {
+                            val mb = size.toLongOrNull()?.let { it / 1_000_000 }
+                            if (mb != null) append(" ($mb MB)")
+                        }
+                    },
+                    url = dlUrl,
                     type = ExtractorLinkType.VIDEO,
                 ) {
-                    this.quality = qualityForResolution(link.resolution ?: 0)
-                    this.referer = "$api/"
+                    this.quality = resolution ?: Qualities.Unknown.value
+                    this.referer = "$mainUrl/"
                 }
             )
         }
 
-        // Emit subtitles — download links rarely include them,
-        // so call /get_subtitles endpoint as fallback per resource.
-        var subtitlesEmitted = false
-        filtered.forEach { link ->
-            val rid = link.resourceId ?: return@forEach
-
-            // Check if inline subtitles exist first
-            if (!link.allSubtitles.isNullOrEmpty()) {
-                link.allSubtitles.forEach { sub ->
-                    val subUrl = sub.url ?: return@forEach
-                    val label = sub.languageName ?: sub.languageCode ?: "Subtitle"
-                    subtitleCallback(newSubtitleFile(label, subUrl))
-                }
-                subtitlesEmitted = true
-                return@forEach
-            }
-
-            // Fallback: fetch from /get_subtitles endpoint
-            if (!subtitlesEmitted) {
-                runCatching {
-                    val subUrl = "$api/get_subtitles?subject_id=${parsed.subjectId}&resource_id=$rid"
-                    val subRes = app.get(subUrl, headers = apiHeaders, timeout = 15L)
-                        .parsedSafe<SubtitlesResponse>()
-                    subRes?.allSubtitles?.forEach { sub ->
-                        val sUrl = sub.url ?: return@forEach
-                        val label = sub.languageName ?: sub.languageCode ?: "Subtitle"
-                        subtitleCallback(newSubtitleFile(label, sUrl))
-                    }
-                }
-                subtitlesEmitted = true
-            }
+        // Emit subtitles
+        val captions = srcData["captions"] as? List<*>
+        captions?.forEach { cap ->
+            val m = cap as? Map<*, *> ?: return@forEach
+            val capUrl = (m["url"] as? String) ?: return@forEach
+            val label = (m["lanName"] as? String)
+                ?: (m["lan"] as? String)
+                ?: "Subtitle"
+            subtitleCallback(newSubtitleFile(label, capUrl))
         }
 
         return true
     }
 
-    private fun qualityForResolution(resolution: Int): Int = when {
-        resolution >= 2160 -> Qualities.P2160.value
-        resolution >= 1440 -> Qualities.P1440.value
-        resolution >= 1080 -> Qualities.P1080.value
-        resolution >= 720 -> Qualities.P720.value
-        resolution >= 480 -> Qualities.P480.value
-        resolution >= 360 -> Qualities.P360.value
-        else -> Qualities.Unknown.value
+    /* ---------- Helpers ---------- */
+
+    /** Fetch JSON and parse into a dynamic map. */
+    private suspend fun fetchJson(url: String): Map<String, Any?> {
+        return runCatching {
+            val text = app.get(url, timeout = 30L).text
+            parseJson<Map<String, Any?>>(text)
+        }.getOrNull() ?: emptyMap()
     }
 
-    /* ---------- mappers ---------- */
+    /* ---------- Mappers ---------- */
 
-    private fun SearchResult.toSearchResponse(): SearchResponse? {
-        val t = title ?: return null
-        val id = subjectId ?: return null
-        val posterUrl = poster
-        val y = year?.substringBefore("-")?.toIntOrNull()
+    @Suppress("UNCHECKED_CAST")
+    private fun Any?.toSearchResponse(): SearchResponse? {
+        val m = this as? Map<*, *> ?: return null
+        val subjectId = (m["subjectId"] as? String) ?: return null
+        val title = (m["title"] as? String) ?: return null
+        val subjectType = (m["subjectType"] as? Int) ?: 1
+        val cover = m["cover"] as? Map<*, *>
+        val coverUrl = cover?.get("url") as? String
+        val releaseDate = m["releaseDate"] as? String
+        val year = releaseDate?.substringBefore("-")?.toIntOrNull()
 
-        // Store metadata in URL so load() can use it (no detail API endpoint)
-        val enc = { s: String -> java.net.URLEncoder.encode(s, "UTF-8") }
-        val detailUrl = buildString {
-            append("$api/meta/$id")
-            append("?title=${enc(t)}")
-            if (posterUrl != null) append("&poster=${enc(posterUrl)}")
-            if (y != null) append("&year=$y")
-            append("&type=${type ?: "movie"}")
-            if (rating != null) append("&rating=$rating")
-            if (!description.isNullOrBlank()) append("&plot=${enc(description)}")
-            if (durationSeconds != null && durationSeconds > 0) append("&duration=${durationSeconds / 60}")
-            if (!genre.isNullOrEmpty()) append("&genre=${enc(genre.joinToString(","))}")
-            if (!country.isNullOrBlank()) append("&country=${enc(country)}")
-        }
+        val isSeries = subjectType == 2
 
-        return if (type == "series") {
-            newTvSeriesSearchResponse(t, detailUrl, TvType.TvSeries) {
-                this.posterUrl = posterUrl
-                this.year = y
+        return if (isSeries) {
+            newTvSeriesSearchResponse(title, subjectId, TvType.TvSeries) {
+                this.posterUrl = coverUrl
+                this.year = year
             }
         } else {
-            newMovieSearchResponse(t, detailUrl, TvType.Movie) {
-                this.posterUrl = posterUrl
-                this.year = y
+            newMovieSearchResponse(title, subjectId, TvType.Movie) {
+                this.posterUrl = coverUrl
+                this.year = year
             }
         }
     }

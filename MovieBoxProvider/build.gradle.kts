@@ -1,8 +1,8 @@
-version = 4
+version = 1
 
 cloudstream {
-    description = "MovieBox - movies and series from moviebox-fastapi"
-    authors = listOf("ahmedio3 (original API)", "ported to Cloudstream")
+    description = "MovieBox provider"
+    authors = listOf("MovieBox")
 
     status = 1
 
@@ -13,7 +13,7 @@ cloudstream {
 
     language = "en"
 
-    iconUrl = "https://moviebox-fastapi.vercel.app/favicon.ico"
+    iconUrl = "https://moviebox-api-theta.vercel.app/favicon.ico"
 }
 
 android {
