@@ -36,6 +36,8 @@ class MovieBoxProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
+    private val fastApiUrl = "https://moviebox-fastapi.vercel.app"
+
     override val mainPage = mainPageOf(
         "$mainUrl/api/homepage" to "Home",
         "$mainUrl/api/trending" to "Trending",
@@ -69,17 +71,16 @@ class MovieBoxProvider : MainAPI() {
         return newHomePageResponse(request.name, items)
     }
 
-    /* ---------- Search ---------- */
+    /* ---------- Search (fastAPI) ---------- */
 
     override suspend fun search(query: String): List<SearchResponse> {
         val encoded = java.net.URLEncoder.encode(query, "UTF-8")
-        val json = fetchJson("$mainUrl/api/search/$encoded")
-        val data = json["data"] as? Map<*, *> ?: return emptyList()
-        val items = data["items"] as? List<*> ?: return emptyList()
-        return items.mapNotNull { it.toSearchResponse() }
+        val json = fetchJson("$fastApiUrl/search?query=$encoded&limit=10")
+        val results = json["results"] as? List<*> ?: return emptyList()
+        return results.mapNotNull { it.toFastSearchResponse() }
     }
 
-    /* ---------- Detail ---------- */
+    /* ---------- Detail (old API) ---------- */
 
     override suspend fun load(url: String): LoadResponse {
         val subjectId = url.substringAfterLast("/").substringBefore("?").substringBefore("#")
@@ -159,7 +160,7 @@ class MovieBoxProvider : MainAPI() {
         }
     }
 
-    /* ---------- Links ---------- */
+    /* ---------- Links (fastAPI) ---------- */
 
     override suspend fun loadLinks(
         data: String,
@@ -170,23 +171,27 @@ class MovieBoxProvider : MainAPI() {
         val parsed = runCatching { parseJson<MovieBoxLoadData>(data) }
             .getOrNull() ?: return false
 
-        val url = buildString {
-            append("$mainUrl/api/sources/${parsed.subjectId}")
-            if (parsed.season != null && parsed.episode != null) {
-                append("?season=${parsed.season}&episode=${parsed.episode}")
-            }
-        }
+        val json = fetchJson("$fastApiUrl/get_download_links?subject_id=${parsed.subjectId}")
+        val links = json["download_links"] as? List<*> ?: return false
 
-        val json = fetchJson(url)
-        val srcData = json["data"] as? Map<*, *> ?: return false
+        var emitted = false
+        var subsEmitted = false
 
-        // Emit direct MP4 links
-        val downloads = srcData["downloads"] as? List<*>
-        downloads?.forEach { dl ->
+        links.forEach { dl ->
             val m = dl as? Map<*, *> ?: return@forEach
+            val dlSeason = (m["season"] as? Int) ?: 0
+            val dlEpisode = (m["episode"] as? Int) ?: 0
+
+            // Filter by requested season/episode for TV, accept all for movie
+            if (parsed.season != null) {
+                if (dlSeason != parsed.season || dlEpisode != parsed.episode) return@forEach
+            }
+
             val dlUrl = (m["url"] as? String) ?: return@forEach
             val resolution = (m["resolution"] as? Int)
             val size = (m["size"] as? String)
+
+            emitted = true
 
             callback(
                 newExtractorLink(
@@ -205,20 +210,23 @@ class MovieBoxProvider : MainAPI() {
                     this.referer = "$mainUrl/"
                 }
             )
+
+            // Emit subtitles once (same subs across resolutions)
+            if (!subsEmitted) {
+                subsEmitted = true
+                val allSubs = m["all_subtitles"] as? List<*>
+                allSubs?.forEach { sub ->
+                    val sm = sub as? Map<*, *> ?: return@forEach
+                    val subUrl = (sm["url"] as? String) ?: return@forEach
+                    val label = (sm["language_name"] as? String)
+                        ?: (sm["language_code"] as? String)
+                        ?: "Subtitle"
+                    subtitleCallback(newSubtitleFile(label, subUrl))
+                }
+            }
         }
 
-        // Emit subtitles
-        val captions = srcData["captions"] as? List<*>
-        captions?.forEach { cap ->
-            val m = cap as? Map<*, *> ?: return@forEach
-            val capUrl = (m["url"] as? String) ?: return@forEach
-            val label = (m["lanName"] as? String)
-                ?: (m["lan"] as? String)
-                ?: "Subtitle"
-            subtitleCallback(newSubtitleFile(label, capUrl))
-        }
-
-        return true
+        return emitted
     }
 
     /* ---------- Helpers ---------- */
@@ -255,6 +263,33 @@ class MovieBoxProvider : MainAPI() {
         } else {
             newMovieSearchResponse(title, apiUrl, TvType.Movie) {
                 this.posterUrl = coverUrl
+                this.year = year
+            }
+        }
+    }
+
+    /** Mapper for fastAPI /search results. */
+    @Suppress("UNCHECKED_CAST")
+    private fun Any?.toFastSearchResponse(): SearchResponse? {
+        val m = this as? Map<*, *> ?: return null
+        val subjectId = (m["subject_id"] as? String) ?: return null
+        val title = (m["title"] as? String) ?: return null
+        val type = (m["type"] as? String) ?: "movie"
+        val poster = (m["poster"] as? String)
+        val yearStr = (m["year"] as? String)
+        val year = yearStr?.toIntOrNull()
+
+        val apiUrl = "$mainUrl/api/info/$subjectId"
+        val isSeries = type == "series"
+
+        return if (isSeries) {
+            newTvSeriesSearchResponse(title, apiUrl, TvType.TvSeries) {
+                this.posterUrl = poster
+                this.year = year
+            }
+        } else {
+            newMovieSearchResponse(title, apiUrl, TvType.Movie) {
+                this.posterUrl = poster
                 this.year = year
             }
         }
